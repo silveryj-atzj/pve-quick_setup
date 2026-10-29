@@ -16,7 +16,13 @@
 - `quick_check_ct.sh`：检查非模板 LXC；检测到问题后逐个询问是否修补。
 - `ssh-menu.ps1`：Windows PowerShell SSH/PVE 节点选择器。
 - `networks.example.json`：SSH 节点配置示例；真实的 `networks.json` 不包含在仓库中。
-- `old/`：历史脚本，仅供参考，不建议直接运行。
+
+## 设计说明
+
+- `quick_ct.sh` 负责创建新容器，`quick_check_ct.sh` 负责检查和修复已有容器，职责分离，便于重复执行。
+- SSH 公钥采用增量同步，不会重复追加已有 Key。
+- TUN 配置采用保守策略：创建容器时写入缺失配置；检查已有容器时发现未知配置只提示，不自动覆盖。
+- 服务检查兼容常见的 `systemd`、SysV init 和 Alpine `OpenRC` 环境。
 
 ## 使用前提
 
@@ -58,24 +64,24 @@ Copy-Item .\networks.example.json .\networks.json
 
 ## TUN 配置说明
 
-脚本识别以下配置形式：
+Tailscale 在 LXC 中运行通常需要将宿主机的 TUN 设备映射到容器。脚本支持以下常见配置形式：
 
 ```text
 lxc.cgroup2.devices.allow: c 10:200 rwm
 lxc.mount.entry: /dev/net/tun dev/net/tun none bind,create=file 0 0
 ```
 
-或：
+部分环境也使用：
 
 ```text
 dev0: /dev/net/tun
 ```
 
-`quick_check_ct.sh` 不会自动清洗或覆盖已有的未知 TUN 配置；发现差异时会显示当前配置和标准配置，建议确认后手动修改。
+`quick_check_ct.sh` 不会自动清洗或覆盖已有的未知 TUN 配置。发现配置差异时，它会显示当前内容和标准写法，由管理员确认后手动调整，避免破坏已有容器配置。
 
 ## 安全注意事项
 
-- 先阅读脚本内容，再在生产节点运行。
+- 先阅读脚本内容，再运行。
 - `quick_ct.sh` 会创建容器、修改容器配置、启动/重启容器，并可能安装或修改 OpenSSH。
 - 当前 SSH 初始化逻辑会设置 `PermitRootLogin yes`。建议仅在可信内网使用，并优先改为公钥认证及更严格的 SSH 策略。
 - 脚本会读取宿主机的 `/root/.ssh/authorized_keys`，请勿将该文件内容提交到仓库。
@@ -84,4 +90,4 @@ dev0: /dev/net/tun
 
 ## 免责声明
 
-脚本按当前项目环境编写，运行前请自行备份 PVE 配置和重要容器数据。作者不对误操作、配置冲突、网络故障或数据损失负责。
+本项目面向个人实验和运维自动化场景。脚本会修改 PVE 和 LXC 配置，运行前请备份重要数据，并先在非生产环境验证。作者不对误操作、配置冲突、网络故障或数据损失负责。
