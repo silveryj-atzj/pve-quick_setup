@@ -1,0 +1,12 @@
+[
+  {
+    "name": "PVE Host",
+    "type": "direct",
+    "target": "user@pve-host"
+  },
+  {
+    "name": "PVE LXC (auto-discovery)",
+    "type": "pve_cts",
+    "pve": "user@pve-host"
+  }
+]
