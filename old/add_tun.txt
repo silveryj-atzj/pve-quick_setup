@@ -1,0 +1,19 @@
+#!/bin/bash
+
+vmid="$1"
+phase="$2"
+
+if [ "$phase" = "pre-start" ]; then
+    CONF_FILE="/etc/pve/lxc/${vmid}.conf"
+    
+    # 检查是否缺失 TUN 配置
+    if [ -f "$CONF_FILE" ] && ! grep -q "lxc.mount.entry: /dev/net/tun" "$CONF_FILE"; then
+        # 写入 TUN 配置
+        echo "" >> "$CONF_FILE"
+        echo "# Auto-added TUN device for Tailscale" >> "$CONF_FILE"
+        echo "lxc.cgroup2.devices.allow: c 10:200 rwm" >> "$CONF_FILE"
+        echo "lxc.mount.entry: /dev/net/tun dev/net/tun none bind,create=file" >> "$CONF_FILE"
+    fi
+fi
+
+exit 0

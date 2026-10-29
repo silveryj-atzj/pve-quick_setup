@@ -1,0 +1,143 @@
+#!/bin/bash
+
+HOST_KEYS="/root/.ssh/authorized_keys"
+
+if [ ! -f "$HOST_KEYS" ]; then
+    echo "错误：宿主机 $HOST_KEYS 文件不存在！"
+    exit 1
+fi
+
+echo "=== 开始诊断、修复 SSH 环境并同步公钥 ==="
+
+# --------------------------------------------------
+# 修复与配置单个 LXC 的函数
+# --------------------------------------------------
+fix_and_sync_lxc() {
+    local id=$1
+    echo "[LXC $id] 正在诊断与修复..."
+
+    # 1. 检查容器内是否安装了 OpenSSH
+    if ! pct exec $id -- which sshd &>/dev/null; then
+        echo "  └─ 提示：容器未安装 OpenSSH (sshd)，已自动跳过。"
+        return
+    fi
+
+    # 2. 检查并修复 SSH 环境 (Host keys & /run/sshd)
+    pct exec $id -- bash -c "
+        # 补全运行目录
+        mkdir -p /run/sshd && chmod 0755 /run/sshd
+        
+        # 检查 Host keys 是否缺失，缺失则生成
+        if [ \$(ls /etc/ssh/ssh_host_*_key 2>/dev/null | wc -l) -eq 0 ]; then
+            ssh-keygen -A
+        fi
+
+        # 确保允许 root 密钥登录
+        if [ -f /etc/ssh/sshd_config ]; then
+            sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+        fi
+
+        # 测试配置并确保服务启动
+        sshd -t &>/dev/null && (systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null)
+    "
+
+    # 3. 增量追加 SSH 公钥
+    pct exec $id -- mkdir -p /root/.ssh
+    pct exec $id -- chmod 700 /root/.ssh
+    pct exec $id -- touch /root/.ssh/authorized_keys
+    pct exec $id -- chmod 600 /root/.ssh/authorized_keys
+
+    ADDED_COUNT=0
+    while IFS= read -r key || [ -n "$key" ]; do
+        [[ -z "$key" || "$key" =~ ^# ]] && continue
+        if ! pct exec $id -- grep -qF "$key" /root/.ssh/authorized_keys; then
+            echo "$key" | pct exec $id -- tee -a /root/.ssh/authorized_keys >/dev/null
+            ((ADDED_COUNT++))
+        fi
+    done < "$HOST_KEYS"
+
+    if [ $ADDED_COUNT -gt 0 ]; then
+        echo "  └─ SSH 环境已修复，成功增量追加了 $ADDED_COUNT 个新 Key。"
+    else
+        echo "  └─ SSH 环境正常，已包含所有 Key。"
+    fi
+}
+
+# --------------------------------------------------
+# 1. 处理正常运行的 LXC 容器（排除 Template）
+# --------------------------------------------------
+echo -e "\n>>> 检查与修复运行中的 LXC 容器..."
+
+LXC_IDS=""
+for ctid in $(pct list | awk 'NR>1 {print $1}'); do
+    # 过滤掉配置文件中含有 template: 1 的容器
+    if ! grep -q -E "^template:\s*1" "/etc/pve/lxc/${ctid}.conf" 2>/dev/null; then
+        LXC_IDS="$LXC_IDS $ctid"
+    fi
+done
+
+if [ -z "$(echo $LXC_IDS | tr -d ' ')" ]; then
+    echo "  └─ 未检测到可用的非模板 LXC 容器。"
+else
+    for id in $LXC_IDS; do
+        # 只对处于 running 状态的容器执行在线修复
+        if pct status $id 2>/dev/null | grep -q "status: running"; then
+            fix_and_sync_lxc $id
+        else
+            echo "[LXC $id] 当前处于关机状态，跳过在线检查。"
+        fi
+    done
+fi
+
+# --------------------------------------------------
+# 2. 专门处理模板容器 (Template，例如 500)
+# --------------------------------------------------
+echo -e "\n>>> 专门处理模板容器 (Template)..."
+TEMPLATES="500" # 需要处理的 Template ID
+
+for tpl_id in $TEMPLATES; do
+    CONF_FILE="/etc/pve/lxc/${tpl_id}.conf"
+    if [ -f "$CONF_FILE" ]; then
+        echo "[Template $tpl_id] 检查与离线注入..."
+        
+        ROOTFS="/var/lib/lxc/$tpl_id/rootfs"
+        
+        # 挂载路径存在时直接离线修配置
+        if [ -d "$ROOTFS/root" ]; then
+            # 1. 注入 SSH /run/sshd 与配置
+            mkdir -p "$ROOTFS/run/sshd" && chmod 0755 "$ROOTFS/run/sshd"
+            mkdir -p "$ROOTFS/root/.ssh" && chmod 700 "$ROOTFS/root/.ssh"
+            touch "$ROOTFS/root/.ssh/authorized_keys" && chmod 600 "$ROOTFS/root/.ssh/authorized_keys"
+            
+            # 2. 开启 PermitRootLogin
+            if [ -f "$ROOTFS/etc/ssh/sshd_config" ]; then
+                sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' "$ROOTFS/etc/ssh/sshd_config"
+            fi
+
+            # 3. 增量追加公钥
+            ADDED_COUNT=0
+            while IFS= read -r key || [ -n "$key" ]; do
+                [[ -z "$key" || "$key" =~ ^# ]] && continue
+                if ! grep -qF "$key" "$ROOTFS/root/.ssh/authorized_keys"; then
+                    echo "$key" >> "$ROOTFS/root/.ssh/authorized_keys"
+                    ((ADDED_COUNT++))
+                fi
+            done < "$HOST_KEYS"
+
+            echo "  └─ 模板 $tpl_id 离线修复完成，追加了 $ADDED_COUNT 个新 Key。"
+        else
+            echo "  └─ 提示：模板 $tpl_id 存储在 LVM/ZFS 离线卷上，建议用常规克隆后开机运行本脚本修复。"
+        fi
+    fi
+done
+
+# --------------------------------------------------
+# 3. QEMU 虚拟机 (VM) 友好提示
+# --------------------------------------------------
+echo -e "\n>>> 检查 QEMU 虚拟机 (VM)..."
+VM_IDS=$(qm list 2>/dev/null | awk 'NR>1 && $3=="running" {print $1}')
+if [ -z "$VM_IDS" ]; then
+    echo "  └─ 当前没有正在运行的 QEMU 虚拟机，自动跳过。"
+fi
+
+echo -e "\n=== 诊断与同步完成！现在试着用 WinSCP 连连看。 ==="
