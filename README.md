@@ -91,3 +91,103 @@ dev0: /dev/net/tun
 ## 免责声明
 
 本项目面向个人实验和运维自动化场景。脚本会修改 PVE 和 LXC 配置，运行前请备份重要数据，并先在非生产环境验证。作者不对误操作、配置冲突、网络故障或数据损失负责。
+
+---
+
+# PVE Quick Setup (English)
+
+Helper scripts for fast LXC provisioning on a Proxmox VE host: clone, SSH bootstrap, TUN/Tailscale setup and status checks.
+
+## Features
+
+- Full clone from an existing LXC template.
+- Initializes OpenSSH inside the container and incrementally syncs public keys from the host's `/root/.ssh/authorized_keys`.
+- Starts and checks `tailscaled`, runs `tailscale up` and prints the registration URL when returned.
+- Checks SSH, TUN and Tailscale status of LXCs.
+- Reports existing TUN configuration differences without silently overwriting unknown settings.
+
+## Files
+
+- `quick_ct.sh` — interactive clone and initialization of a new LXC.
+- `quick_check_ct.sh` — checks non-template LXCs and asks before patching each detected issue.
+- `ssh-menu.ps1` — Windows PowerShell SSH / PVE node picker.
+- `networks.example.json` — sample SSH node configuration. The real `networks.json` is not committed.
+
+## Design notes
+
+- `quick_ct.sh` creates containers; `quick_check_ct.sh` audits and repairs existing ones. Separate responsibilities make both safe to re-run.
+- SSH keys are synced incrementally — existing keys are never appended twice.
+- TUN configuration is conservative: missing entries are written when creating a container, but unknown settings in existing containers are only reported, never overwritten.
+- Service checks work across `systemd`, SysV init and Alpine `OpenRC` environments.
+
+## Requirements
+
+- Run as `root` on the Proxmox VE host.
+- `pct` available.
+- A working LXC template.
+- `/root/.ssh/authorized_keys` on the host if you want key sync.
+- Containers must be able to reach package repositories and Tailscale.
+
+## Usage
+
+```bash
+chmod +x quick_ct.sh quick_check_ct.sh
+./quick_ct.sh
+./quick_check_ct.sh
+```
+
+You can also pass the template CTID via environment variable:
+
+```bash
+TEMPLATE_ID=<template-ctid> ./quick_ct.sh
+```
+
+## Windows SSH menu
+
+The real `networks.json` is not committed. Copy the example and adapt it:
+
+```powershell
+Copy-Item .\networks.example.json .\networks.json
+.\ssh-menu.ps1
+```
+
+Two node types are supported:
+
+- `direct` — plain SSH, e.g. `user@pve-host`.
+- `pve_cts` — discovers non-template LXCs through the PVE API and enters them with `pct enter`.
+
+`networks.json` is in `.gitignore`. Keep it local; never commit real node configuration to a public repository.
+
+## TUN configuration
+
+Running Tailscale inside an LXC usually requires mapping the host TUN device into the container. The scripts support the common forms:
+
+```text
+lxc.cgroup2.devices.allow: c 10:200 rwm
+lxc.mount.entry: /dev/net/tun dev/net/tun none bind,create=file 0 0
+```
+
+Some environments use:
+
+```text
+dev0: /dev/net/tun
+```
+
+`quick_check_ct.sh` never cleans up or overwrites unknown TUN settings. When it finds a difference it prints both the current content and the canonical form, leaving the decision to the administrator.
+
+## Security notes
+
+- Read the scripts before running them.
+- `quick_ct.sh` creates containers, modifies their configuration, starts/restarts them and may install or modify OpenSSH.
+- The SSH bootstrap sets `PermitRootLogin yes`. Use it only on a trusted internal network and prefer key-only authentication with a stricter SSH policy.
+- The scripts read `/root/.ssh/authorized_keys`; never commit that file.
+- Tailscale registration URLs are sensitive — do not publish terminal output or logs.
+- Never put API tokens, auth keys, private keys, passwords or real environment configuration into scripts, issues or logs.
+
+## Disclaimer
+
+This project targets personal experiments and operations automation. The scripts modify PVE and LXC configuration. Back up important data and test in a non-production environment first. The author is not responsible for misconfiguration, conflicts, network failures or data loss.
+
+## License
+
+MIT
