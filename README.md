@@ -187,7 +187,3 @@ dev0: /dev/net/tun
 ## Disclaimer
 
 This project targets personal experiments and operations automation. The scripts modify PVE and LXC configuration. Back up important data and test in a non-production environment first. The author is not responsible for misconfiguration, conflicts, network failures or data loss.
-
-## License
-
-MIT
